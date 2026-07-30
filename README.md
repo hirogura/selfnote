@@ -1,14 +1,22 @@
 # selfnote
-セルフホストで使うmdエディタです
+セルフホストで使うmdエディタです。ファイル・フォルダベースなので管理が楽。
+
+・コンテナ内で稼働を想定
+
+・Ubuntu26.04イメージのコンテナで動作を確認
+
+・Tailscale環境を想定
+
+![ロゴ画像](images/selfnote-ph.png)
 
 ## インストール方法
 
-Run:
+コンテナ内で下記を実行
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hirogura/selfnote/main/install-selfnote.sh | bash
 ```
-![ロゴ画像](images/selfnote-ph.png)
+
 
 
 
