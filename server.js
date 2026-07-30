@@ -185,4 +185,4 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, HOST, () => console.log(`SelfNote: http://${HOST}:${PORT}`));
+server.listen(PORT, HOST, () => console.log('SelfNote: http://' + HOST + ':' + PORT));
