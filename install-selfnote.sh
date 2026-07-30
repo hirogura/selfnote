@@ -4,11 +4,12 @@ set -e
 INSTALL_DIR="/opt/selfnote"
 DATA_DIR="/opt/lxd-data/note"
 PORT=3342
+TAILSCALE_PORT=3342
 
-echo "SelfNote v23 install start"
+echo "🔧 SelfNote v23 インストール開始..."
 
 if ! command -v node &>/dev/null; then
-  echo "Installing Node.js..."
+  echo "📦 Node.js インストール中..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
@@ -19,7 +20,7 @@ mkdir -p "$INSTALL_DIR/public"
 mkdir -p "$DATA_DIR"
 
 if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
-  echo "ERROR: $DATA_DIR not writable. Check permissions or UID squashing."
+  echo "❌ $DATA_DIR への書き込みに失敗しました (権限/UID squashing等の可能性)。インストールを中止します。"
   exit 1
 fi
 rm -f "$DATA_DIR/.write-test"
@@ -228,6 +229,15 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, () => console.log('SelfNote: http://' + HOST + ':' + PORT));
 SERVEREOF
 
+cat > "$INSTALL_DIR/package.json" <<'PKGEOF'
+{
+  "name": "selfnote",
+  "version": "23.0.0",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" }
+}
+PKGEOF
+
 cat > "$INSTALL_DIR/public/index.html" <<'HTMLEOF'
 <!DOCTYPE html>
 <html lang="ja">
@@ -302,7 +312,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .toc-item.l3{padding-left:30px;font-size:12px}
 .ep{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .ep.hide{display:none}
-#ed{flex:1;width:100%;padding:12px 18px;background:var(--bg);color:var(--tx);border:none;outline:none;resize:none;overflow-y:auto;font-family:Menlo,Consolas,Courier New,monospace;font-size:13px;line-height:1.4;tab-size:2}
+#ed{flex:1;width:100%;padding:12px 18px;background:var(--bg);color:var(--tx);border:none;outline:none;resize:none;overflow-y:auto;font-family:'Menlo','Consolas','Courier New',monospace;font-size:13px;line-height:1.4;tab-size:2}
 #pv{flex:1;padding:14px 22px;overflow-y:auto;font-size:15px;line-height:1.5;border-left:1px solid var(--bd)}
 #il{flex:1;padding:14px 22px;overflow-y:auto;font-size:15px;line-height:1.5;outline:none;border-left:1px solid var(--bd)}
 #pv h1,#il h1{font-size:1.8em;margin:.5em 0 .3em;border-bottom:1px solid var(--bd);padding-bottom:.25em}
@@ -313,7 +323,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 #pv ul,#pv ol,#il ul,#il ol{padding-left:1.8em;margin:.5em 0}
 #pv li,#il li{margin:.2em 0}
 #pv blockquote,#il blockquote{border-left:3px solid var(--ac);padding-left:1em;margin:.5em 0;color:var(--tx2)}
-#pv code,#il code{background:var(--sf);padding:2px 6px;border-radius:var(--radius);font-family:Menlo,Consolas,Courier New,monospace;font-size:.88em}
+#pv code,#il code{background:var(--sf);padding:2px 6px;border-radius:var(--radius);font-family:'Menlo','Consolas','Courier New',monospace;font-size:.88em}
 #pv pre,#il pre{background:var(--sf);padding:12px 16px;border-radius:var(--radius);overflow-x:auto;margin:.5em 0;position:relative;min-height:1.5em}
 #pv pre code,#il pre code{background:none;padding:0;white-space:pre;display:block}
 .cp-btn{position:absolute;top:6px;right:6px;background:var(--bd);color:var(--tx2);border:none;border-radius:var(--radius);padding:3px 10px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .15s}
@@ -550,26 +560,61 @@ initTheme();changeFontSize(0);if(tocOpen){document.getElementById('toc').classLi
 </html>
 HTMLEOF
 
-cat > /etc/systemd/system/selfnote.service <<'SERVICEEOF'
+cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote - Self-hosted Markdown Editor
+Description=SelfNote v23 Markdown Editor
 After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/selfnote
-ExecStart=/usr/bin/node /opt/selfnote/server.js
+ExecStart=$(which node) $INSTALL_DIR/server.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
 
 [Install]
 WantedBy=multi-user.target
-SERVICEEOF
+EOF
 
 systemctl daemon-reload
-systemctl enable --now selfnote
+systemctl enable selfnote
+systemctl start selfnote
 
-echo "SelfNote install complete!"
-echo "http://127.0.0.1:$PORT"
+echo ""
+echo "==> tailscale serve を設定..."
+
+TAILSCALE_PORT=3342
+tailscale serve --https=${TAILSCALE_PORT} off 2>/dev/null || true
+tailscale serve --bg --https=${TAILSCALE_PORT} "http://127.0.0.1:${PORT}" || {
+    echo "⚠️  tailscale serve の設定に失敗しました（手動で設定してください）"
+    echo "     tailscale serve --bg --https=${TAILSCALE_PORT} http://127.0.0.1:${PORT}"
+}
+echo "  ✓ tailscale serve 設定完了"
+
+sleep 1
+if systemctl is-active --quiet selfnote; then
+  echo "  ✓ selfnote.service 起動確認OK"
+else
+  echo "  ⚠️  selfnote.service が起動していません。'journalctl -u selfnote -n 30' を確認してください"
+fi
+
+IP=$(hostname -I | awk '{print $1}')
+HOSTNAME=$(hostname)
+TAILSCALE_DOMAIN=$(tailscale status --json 2>/dev/null | grep -oP '"DNSName"\s*:\s*"[^"]*"' | head -1 | grep -oP '"[^"]*"$' | tr -d '"' | sed 's/\.$//')
+if [ -z "$TAILSCALE_DOMAIN" ]; then
+  TAILSCALE_DOMAIN="(tailscale未設定)"
+fi
+
+echo ""
+echo "✅ SelfNote v23 インストール完了!"
+echo ""
+echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
+echo ""
+echo "📁 データ: $DATA_DIR"
+echo "📂 インストール: $INSTALL_DIR"
+echo ""
+echo "コマンド:"
+echo "  systemctl start selfnote   # 起動"
+echo "  systemctl stop selfnote    # 停止"
+echo "  systemctl restart selfnote # 再起動"
+echo "  journalctl -u selfnote -f  # ログ確認"
