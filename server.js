@@ -99,7 +99,7 @@ const server = http.createServer(async (req, res) => {
   if (pn.startsWith('/api/files/') && req.method === 'DELETE') {
     const fp = pn.slice(11), full = path.join(DATA, fp);
     if (!safe(full)) return json(res, 403, { error: 'denied' });
-    if (!fs.existsSync(fp)) return json(res, 404, { error: 'not found' });
+    if (!fs.existsSync(full)) return json(res, 404, { error: 'not found' });
     fs.rmSync(full, { recursive: true });
     invalidateCache();
     return json(res, 200, { ok: true });
