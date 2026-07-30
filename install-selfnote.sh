@@ -6,7 +6,7 @@ DATA_DIR="/opt/lxd-data/note"
 PORT=3342
 TAILSCALE_PORT=3342
 
-echo "🔧 SelfNote v23 インストール開始..."
+echo "🔧 SelfNote v23 (patched) インストール開始..."
 
 if ! command -v node &>/dev/null; then
   echo "📦 Node.js インストール中..."
@@ -232,7 +232,7 @@ SERVEREOF
 cat > "$INSTALL_DIR/package.json" <<'PKGEOF'
 {
   "name": "selfnote",
-  "version": "23.0.0",
+  "version": "23.0.1",
   "main": "server.js",
   "scripts": { "start": "node server.js" }
 }
@@ -454,6 +454,7 @@ let curFile=null,curView='edit',modalCb=null,curDir='',lastEdited='ed',savedSel=
 let dirCache={};
 async function ensureDir(p){if(!(p in dirCache)){try{dirCache[p]=await api('GET','/api/files/'+encodeURIComponent(p))}catch{dirCache[p]=[]}}}
 const ed=document.getElementById('ed'),pv=document.getElementById('pv'),il=document.getElementById('il'),ft=document.getElementById('ft');
+ft.addEventListener('click',function(e){const row=e.target.closest('.fi');if(!row)return;const p=row.dataset.path;if(!p)return;if(e.target.closest('.fi-fav')){e.stopPropagation();toggleFav(p,e);return}if(e.target.closest('.fi-rename')){e.stopPropagation();renameItem(p,row.dataset.isdir==='1');return}});
 document.addEventListener('mousedown',e=>{if(e.target.closest('.fmt-bt')&&document.activeElement===ed){savedSel={s:ed.selectionStart,e:ed.selectionEnd}}},{capture:true});
 const api=(m,u,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 function toast(t,ok=true){const e=document.getElementById('toast');e.textContent=t;e.className=ok?'':'error';setTimeout(()=>e.className='hide',2000)}
@@ -486,8 +487,8 @@ async function toggleFav(path,e){e.stopPropagation();const i=favorites.indexOf(p
 function toggleSort(f){if(sortField===f)sortAsc=!sortAsc;else{sortField=f;sortAsc=true}document.getElementById('sort-name').className='sort-btn'+(sortField==='name'?' on':'');document.getElementById('sort-date').className='sort-btn'+(sortField==='date'?' on':'');document.getElementById('sort-name').textContent='ファイル名 '+(sortField==='name'?(sortAsc?'▲':'▼'):'▲');document.getElementById('sort-date').textContent='作成日 '+(sortField==='date'?(sortAsc?'▲':'▼'):'▲');localStorage.setItem('selfnote-sort',JSON.stringify({field:sortField,asc:sortAsc}));loadTree()}
 function toggleHidden(){showHidden=!showHidden;localStorage.setItem('selfnote-hidden',showHidden);document.getElementById('hiddenBtn').classList.toggle('on',showHidden);loadTree()}
 function sortFiles(files){const d=files.filter(f=>f.isDir);const ff=files.filter(f=>!f.isDir);const c=(a,b)=>{if(sortField==='date')return sortAsc?(a.birthtime-b.birthtime):(b.birthtime-a.birthtime);return sortAsc?a.name.localeCompare(b.name):b.name.localeCompare(a.name)};d.sort(c);ff.sort(c);return[...d,...ff]}
-function makeFavItem(fav){const d=document.createElement('div');d.className='fi'+(curFile===fav.path?' on':'');const dir=fav.path.includes('/')?fav.path.slice(0,fav.path.lastIndexOf('/')):'';d.innerHTML='<span class="ico-tree" style="visibility:hidden">▸</span><span class="ico">'+ICO_MD+'</span><span class="fi-name">'+fav.name+'</span><span class="fi-favpath">'+dir+'</span><span class="fi-fav on" title="お気に入り解除">★</span><span class="fi-rename" title="名前変更">✏</span>';d.onclick=()=>{curDir=dir;openFile(fav.path)};return d}
-function renderItems(items,container,depth,parentPath){for(const item of items){if(!showHidden&&isHidden(item.name))continue;if(item.isDir){const fp=parentPath?parentPath+'/'+item.name:item.name;const isExp=expandedDirs.has(fp);const el=document.createElement('div');el.className='fi'+(curFile===fp?' on':'');el.style.paddingLeft=(10+depth*16)+'px';el.innerHTML='<span class="ico-tree'+(isExp?' open':'')+'">▸</span><span class="ico">'+(isExp?ICO_FOLDER_OPEN:ICO_FOLDER)+'</span><span class="fi-name">'+item.name+'</span><span class="fi-rename" title="名前変更">✏</span>';el.onclick=()=>{curDir=fp;toggleDir(fp)};container.appendChild(el);if(isExp){const ch=dirCache[fp]||[];renderItems(sortFiles(ch),container,depth+1,fp)}}else{const fp=parentPath?parentPath+'/'+item.name:item.name;const el=document.createElement('div');el.className='fi'+(curFile===fp?' on':'');el.style.paddingLeft=(10+depth*16)+'px';const fvBtn=item.name.endsWith('.md')?'<span class="fi-fav'+(isFav(fp)?' on':'')+'" title="お気に入り">★</span>':'';el.innerHTML='<span class="ico-tree" style="visibility:hidden">▸</span><span class="ico">'+fileIcon(item.name,false)+'</span><span class="fi-name">'+item.name+'</span>'+fvBtn+'<span class="fi-rename" title="名前変更">✏</span>';el.onclick=()=>openFile(fp);container.appendChild(el)}}}
+function makeFavItem(fav){const d=document.createElement('div');d.className='fi'+(curFile===fav.path?' on':'');const dir=fav.path.includes('/')?fav.path.slice(0,fav.path.lastIndexOf('/')):'';d.innerHTML='<span class="ico-tree" style="visibility:hidden">▸</span><span class="ico">'+ICO_MD+'</span><span class="fi-name">'+fav.name+'</span><span class="fi-favpath">'+dir+'</span><span class="fi-fav on" title="お気に入り解除">★</span><span class="fi-rename" title="名前変更">✏</span>';d.onclick=()=>{curDir=dir;openFile(fav.path)};d.dataset.path=fav.path;d.dataset.isdir='0';return d}
+function renderItems(items,container,depth,parentPath){for(const item of items){if(!showHidden&&isHidden(item.name))continue;if(item.isDir){const fp=parentPath?parentPath+'/'+item.name:item.name;const isExp=expandedDirs.has(fp);const el=document.createElement('div');el.className='fi'+(curFile===fp?' on':'');el.style.paddingLeft=(10+depth*16)+'px';el.innerHTML='<span class="ico-tree'+(isExp?' open':'')+'">▸</span><span class="ico">'+(isExp?ICO_FOLDER_OPEN:ICO_FOLDER)+'</span><span class="fi-name">'+item.name+'</span><span class="fi-rename" title="名前変更">✏</span>';el.onclick=()=>{curDir=fp;toggleDir(fp)};el.dataset.path=fp;el.dataset.isdir='1';container.appendChild(el);if(isExp){const ch=dirCache[fp]||[];renderItems(sortFiles(ch),container,depth+1,fp)}}else{const fp=parentPath?parentPath+'/'+item.name:item.name;const el=document.createElement('div');el.className='fi'+(curFile===fp?' on':'');el.style.paddingLeft=(10+depth*16)+'px';const fvBtn=item.name.endsWith('.md')?'<span class="fi-fav'+(isFav(fp)?' on':'')+'" title="お気に入り">★</span>':'';el.innerHTML='<span class="ico-tree" style="visibility:hidden">▸</span><span class="ico">'+fileIcon(item.name,false)+'</span><span class="fi-name">'+item.name+'</span>'+fvBtn+'<span class="fi-rename" title="名前変更">✏</span>';el.onclick=()=>openFile(fp);el.dataset.path=fp;el.dataset.isdir='0';container.appendChild(el)}}}
 function renderTree(){ft.innerHTML='';const rootEl=document.createElement('div');rootEl.className='fi';rootEl.style.paddingLeft='10px';rootEl.style.borderBottom='1px solid var(--bd)';rootEl.innerHTML='<span class="ico-tree" style="visibility:hidden">▸</span><span class="ico">'+ICO_FOLDER+'</span><span class="fi-name" style="color:var(--ac);font-weight:600">ルートフォルダ</span>';rootEl.onclick=()=>{curDir='';expandedDirs.clear();loadTree()};ft.appendChild(rootEl);const allFav=favorites.map(fp=>{const name=fp.split('/').pop();return{name,path:fp}});allFav.sort((a,b)=>sortAsc?a.name.localeCompare(b.name):b.name.localeCompare(a.name));if(allFav.length){const sep=document.createElement('div');sep.className='fi-sep';ft.appendChild(sep);allFav.forEach(fav=>ft.appendChild(makeFavItem(fav)))}const rootFiles=dirCache['']||[];renderItems(sortFiles(rootFiles),ft,0,'')}
 async function toggleDir(path){if(expandedDirs.has(path)){expandedDirs.delete(path);for(const d of[...expandedDirs]){if(d.startsWith(path+'/'))expandedDirs.delete(d)}}else{expandedDirs.add(path);await ensureDir(path)}renderTree()}
 async function loadTree(){dirCache={};await ensureDir('');for(const dir of expandedDirs){await ensureDir(dir)}renderTree()}
@@ -606,7 +607,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v23 インストール完了!"
+echo "✅ SelfNote v23 (patched) インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""
