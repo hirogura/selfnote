@@ -47,3 +47,6 @@ sudo rm -rf /opt/selfnote
 ```bash
 sudo rm -rf /opt/lxd-data/note
 ```
+
+## ライセンス
+このプロジェクトは [MIT License](LICENSE) の下で公開されています。
