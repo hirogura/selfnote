@@ -43,9 +43,11 @@ for f in public/selfnote-icon.png; do
   fi
 done
 
+node --check "$INSTALL_DIR/server.js"
+
 cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote v23 Markdown Editor
+Description=SelfNote v1.2.0 Markdown Editor
 After=network.target
 
 [Service]
@@ -66,13 +68,16 @@ systemctl start selfnote
 echo ""
 echo "==> tailscale serve を設定..."
 
-TAILSCALE_PORT=3342
-tailscale serve --https=${TAILSCALE_PORT} off 2>/dev/null || true
-tailscale serve --bg --https=${TAILSCALE_PORT} "http://127.0.0.1:${PORT}" || {
-    echo "⚠️  tailscale serve の設定に失敗しました（手動で設定してください）"
-    echo "     tailscale serve --bg --https=${TAILSCALE_PORT} http://127.0.0.1:${PORT}"
-}
-echo "  ✓ tailscale serve 設定完了"
+if command -v tailscale &>/dev/null; then
+  tailscale serve --https=${TAILSCALE_PORT} off 2>/dev/null || true
+  tailscale serve --bg --https=${TAILSCALE_PORT} "http://127.0.0.1:${PORT}" || {
+      echo "⚠️  tailscale serve の設定に失敗しました（手動で設定してください）"
+      echo "     tailscale serve --bg --https=${TAILSCALE_PORT} http://127.0.0.1:${PORT}"
+  }
+  echo "  ✓ tailscale serve 設定完了"
+else
+  echo "  ⚠️  tailscale が見つかりません。tailscale serve の設定をスキップします"
+fi
 
 sleep 1
 if systemctl is-active --quiet selfnote; then
@@ -89,7 +94,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v23 (patched) インストール完了!"
+echo "✅ SelfNote v1.2.0 インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""

@@ -1,6 +1,6 @@
 {
   "name": "selfnote",
-  "version": "23.0.1",
+  "version": "1.2.0",
   "main": "server.js",
   "scripts": { "start": "node server.js" }
 }
