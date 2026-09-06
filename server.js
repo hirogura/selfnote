@@ -138,12 +138,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (pn === '/api/files' && req.method === 'GET')
+    if ((pn === '/api/files' || pn === '/api/files/') && req.method === 'GET')
       return json(res, 200, await listDir(DATA));
 
     if (pn.startsWith('/api/files/') && req.method === 'GET') {
       const rel = pn.slice(11);
-      if (!rel || !validRel(rel)) return json(res, 403, { error: 'denied' });
+      if (!validRel(rel)) return json(res, 403, { error: 'denied' });
       const fp = path.join(DATA, rel);
       if (!safeData(fp)) return json(res, 403, { error: 'denied' });
       let st;
@@ -158,7 +158,7 @@ const server = http.createServer(async (req, res) => {
       } catch { return json(res, 404, { error: 'not found' }); }
     }
 
-    if (pn === '/api/files' && req.method === 'POST') {
+    if ((pn === '/api/files' || pn === '/api/files/') && req.method === 'POST') {
       let b;
       try { b = parseJson(await readBody(req)); } catch { return json(res, 413, { error: 'body too large' }); }
       if (b === undefined || b === null) return json(res, 400, { error: 'bad json' });
