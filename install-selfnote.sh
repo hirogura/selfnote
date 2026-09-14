@@ -29,10 +29,11 @@ rm -f "$DATA_DIR/.write-test"
 systemctl stop selfnote 2>/dev/null || true
 
 echo "📥 ファイルを取得中..."
-for f in public/favicon.svg server.js package.json public/index.html; do
+for f in public/favicon.svg server.js package.json public/index.html install-selfnote.sh; do
   echo "  -> $f"
   curl -fsSL "$REPO/$f" -o "$INSTALL_DIR/$f"
 done
+chmod +x "$INSTALL_DIR/install-selfnote.sh"
 
 echo "📥 アイコンファイルを取得中..."
 for f in public/selfnote-icon.png; do
@@ -47,7 +48,7 @@ node --check "$INSTALL_DIR/server.js"
 
 cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote v1.2.0 Markdown Editor
+Description=SelfNote v1.3.1 Markdown Editor
 After=network.target
 
 [Service]
@@ -82,6 +83,8 @@ fi
 sleep 1
 if systemctl is-active --quiet selfnote; then
   echo "  ✓ selfnote.service 起動確認OK"
+  # アップデート完了を通知 (server.js の起動時クリアと二重化し、確実に polling を終わらせる)
+  rm -f /tmp/selfnote-update.flag
 else
   echo "  ⚠️  selfnote.service が起動していません。'journalctl -u selfnote -n 30' を確認してください"
 fi
@@ -94,7 +97,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v1.2.0 インストール完了!"
+echo "✅ SelfNote v1.3.1 インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""

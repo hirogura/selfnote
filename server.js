@@ -309,7 +309,12 @@ const server = http.createServer(async (req, res) => {
 
     if (pn === '/api/update/status' && req.method === 'GET') {
       let updating = false;
-      try { fs.statSync(UPDATE_FLAG); updating = true; } catch {}
+      try {
+        const st = fs.statSync(UPDATE_FLAG);
+        // 15分以上前の stale なフラグは残留とみなして自己修復 (失敗時にずっと updating のままになるのを防ぐ)
+        if (Date.now() - st.mtimeMs < 15 * 60 * 1000) updating = true;
+        else try { fs.unlinkSync(UPDATE_FLAG); } catch {}
+      } catch {}
       return json(res, 200, { updating });
     }
 
