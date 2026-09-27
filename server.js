@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -16,6 +17,12 @@ const MAX_SEARCH_QUERY = 200;
 const MAX_SEARCH_RESULTS = 50;
 const MAX_SEARCH_FILE = 1024 * 1024;
 const MAX_RECENT = 100;
+const SYNC_CONFIG_FILE = path.join(__dirname, 'sync_config.json');
+const SYNC_ROLE_SOURCE = 'source';
+const SYNC_ROLE_DEST = 'destination';
+const SYNC_MAX_BODY = 100 * 1024 * 1024;
+const SYNC_MAX_FILE = 20 * 1024 * 1024;
+const DEFAULT_SYNC_CONFIG = { role: SYNC_ROLE_SOURCE, peer: '', peer_name: '', sync_time: '03:00', last_sync: '', last_result: '' };
 
 try { fs.unlinkSync(UPDATE_FLAG); } catch {}
 
@@ -51,13 +58,14 @@ function safe(p) {
   return isInside(real, DATA) || isInside(real, PUB);
 }
 
-function readBody(req) {
+function readBody(req, max) {
   return new Promise((resolve, reject) => {
+    const limit = max || MAX_BODY;
     const c = [];
     let size = 0;
     req.on('data', d => {
       size += d.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(new Error('body too large'));
         req.destroy();
         return;
@@ -122,6 +130,266 @@ async function listDir(dir) {
 }
 
 function invalidateCache() { dirCache.clear(); }
+
+// ===== 同期 (sync) =====
+// 別PCの selfnote と1日1回・片方向で同期する（予備機用途・同期先は1箇所のみ）。
+// 同期対象は DATA 配下の全ファイル。tailnet 内通信を前提とする。
+
+function loadSyncConfig() {
+  const cfg = { ...DEFAULT_SYNC_CONFIG };
+  try {
+    const d = JSON.parse(fs.readFileSync(SYNC_CONFIG_FILE, 'utf-8'));
+    if (d && typeof d === 'object') {
+      for (const k of Object.keys(DEFAULT_SYNC_CONFIG)) {
+        if (typeof d[k] === 'string') cfg[k] = d[k];
+      }
+    }
+  } catch {}
+  if (cfg.role !== SYNC_ROLE_SOURCE && cfg.role !== SYNC_ROLE_DEST) cfg.role = SYNC_ROLE_SOURCE;
+  if (!validSyncTime(cfg.sync_time)) cfg.sync_time = DEFAULT_SYNC_CONFIG.sync_time;
+  return cfg;
+}
+
+function saveSyncConfig(cfg) {
+  const tmp = SYNC_CONFIG_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf-8');
+  fs.renameSync(tmp, SYNC_CONFIG_FILE);
+}
+
+function validSyncTime(s) {
+  return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+}
+
+function isValidPeerUrl(u) {
+  if (typeof u !== 'string' || !u || u.length > 500) return false;
+  try {
+    const p = new URL(u);
+    return (p.protocol === 'http:' || p.protocol === 'https:') && !!p.hostname;
+  } catch { return false; }
+}
+
+function tailscaleStatus() {
+  return new Promise((resolve) => {
+    exec('tailscale status --json', { timeout: 10000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const d = JSON.parse(stdout);
+        return resolve(d && typeof d === 'object' ? d : null);
+      } catch { return resolve(null); }
+    });
+  });
+}
+
+async function getSelfBaseUrl() {
+  const d = await tailscaleStatus();
+  try {
+    const dns = String((((d || {}).Self) || {}).DNSName || '').replace(/\.+$/, '');
+    if (dns) return `https://${dns}:${PORT}`;
+  } catch {}
+  return '';
+}
+
+async function getSelfHostName() {
+  const d = await tailscaleStatus();
+  try { return String((((d || {}).Self) || {}).HostName || ''); } catch {}
+  return '';
+}
+
+async function getSyncPeerList() {
+  const d = await tailscaleStatus();
+  if (!d) return [];
+  const peers = (d.Peer && typeof d.Peer === 'object') ? d.Peer : {};
+  let selfDns = '';
+  try { selfDns = String((((d || {}).Self) || {}).DNSName || '').replace(/\.+$/, ''); } catch {}
+  const out = [];
+  for (const k of Object.keys(peers)) {
+    const p = peers[k];
+    if (!p || typeof p !== 'object') continue;
+    let dns = '';
+    try { dns = String(p.DNSName || '').replace(/\.+$/, ''); } catch {}
+    if (!dns || dns === selfDns) continue;
+    const name = p.HostName || dns;
+    const ips = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : [];
+    out.push({ name, dns, url: `https://${dns}:${PORT}`, ip: ips[0] || '', os: p.OS || '', online: !!p.Online });
+  }
+  // 稼働中を先頭に
+  out.sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
+  return out;
+}
+
+function httpsRequestJson(urlStr, method, payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch { return reject(new Error('bad url')); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return reject(new Error('bad url'));
+    const body = payload !== undefined ? JSON.stringify(payload) : null;
+    const lib = u.protocol === 'https:' ? https : http;
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method,
+      timeout: timeoutMs || 30000,
+      rejectUnauthorized: false,
+      headers: { 'User-Agent': 'selfnote-sync' },
+    };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.headers['Content-Length'] = Buffer.byteLength(body);
+    }
+    const req = lib.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', (d) => chunks.push(d));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString() || '{}';
+        try { resolve(JSON.parse(text)); } catch { reject(new Error('bad response')); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function buildSyncBundle() {
+  const files = [];
+  async function walk(dir, base) {
+    let entries;
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const fp = path.join(dir, e.name);
+      const rel = base ? base + '/' + e.name : e.name;
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) { await walk(fp, rel); continue; }
+      if (!e.isFile()) continue;
+      try {
+        const st = await fsp.stat(fp);
+        if (st.size > SYNC_MAX_FILE) {
+          files.push({ rel, size: st.size, mtime: st.mtimeMs || 0, tooLarge: true, content: null });
+          continue;
+        }
+        const buf = await fsp.readFile(fp);
+        files.push({ rel, size: st.size, mtime: st.mtimeMs || 0, content: buf.toString('base64') });
+      } catch {}
+    }
+  }
+  await walk(DATA, '');
+  return { version: 1, exported_at: new Date().toISOString(), files };
+}
+
+async function applySyncBundle(bundle) {
+  if (!bundle || typeof bundle !== 'object' || !Array.isArray(bundle.files)) throw new Error('invalid bundle');
+  const wanted = new Map();
+  for (const f of bundle.files) {
+    if (!f || typeof f !== 'object') continue;
+    if (typeof f.rel !== 'string' || !f.rel || !validRel(f.rel)) continue;
+    if (f.tooLarge) { wanted.set(f.rel, null); continue; } // 肥大ファイルは現地のものを保持
+    if (typeof f.content !== 'string') continue;
+    let buf;
+    try { buf = Buffer.from(f.content, 'base64'); } catch { continue; }
+    if (buf.length > SYNC_MAX_FILE) { wanted.set(f.rel, null); continue; }
+    wanted.set(f.rel, { buf, mtime: typeof f.mtime === 'number' ? f.mtime : 0 });
+  }
+  const existing = [];
+  async function walk(dir, base) {
+    let entries;
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const fp = path.join(dir, e.name);
+      const rel = base ? base + '/' + e.name : e.name;
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) { await walk(fp, rel); continue; }
+      if (e.isFile()) existing.push(rel);
+    }
+  }
+  await walk(DATA, '');
+  for (const rel of existing) {
+    if (wanted.has(rel)) continue;
+    const fp = path.join(DATA, rel);
+    if (!safeData(fp)) continue;
+    try { await fsp.unlink(fp); } catch {}
+  }
+  for (const [rel, entry] of wanted) {
+    if (!entry) continue;
+    const fp = path.join(DATA, rel);
+    if (!safeData(fp)) continue;
+    try {
+      await fsp.mkdir(path.dirname(fp), { recursive: true });
+      await fsp.writeFile(fp, entry.buf);
+      if (entry.mtime > 0) {
+        try { await fsp.utimes(fp, new Date(), new Date(entry.mtime)); } catch {}
+      }
+    } catch {}
+  }
+  // 空になったディレクトリを掃除（ベストエフォート）
+  async function prune(dir) {
+    let entries;
+    try { entries = await fsp.readdir(dir); } catch { return; }
+    for (const e of entries) {
+      const fp = path.join(dir, e);
+      try { const st = await fsp.stat(fp); if (st.isDirectory()) await prune(fp); } catch {}
+    }
+    if (path.resolve(dir) !== path.resolve(DATA)) {
+      try { await fsp.rmdir(dir); } catch {}
+    }
+  }
+  await prune(DATA);
+  invalidateCache();
+}
+
+function markSyncResult(ok, message) {
+  try {
+    const cfg = loadSyncConfig();
+    if (ok) cfg.last_sync = new Date().toISOString();
+    cfg.last_result = String(message || '').slice(0, 300);
+    saveSyncConfig(cfg);
+  } catch {}
+}
+
+async function syncPushToPeer(peerUrl) {
+  if (!isValidPeerUrl(peerUrl)) throw new Error('同期先が未設定です');
+  const bundle = await buildSyncBundle();
+  await httpsRequestJson(peerUrl.replace(/\/+$/, '') + '/api/sync/import', 'POST', bundle, 60000);
+  markSyncResult(true, '同期しました（送信・' + (bundle.exported_at || '') + '）');
+  return bundle.exported_at || '';
+}
+
+async function syncPullFromPeer(peerUrl) {
+  if (!isValidPeerUrl(peerUrl)) throw new Error('同期元が未設定です');
+  const bundle = await httpsRequestJson(peerUrl.replace(/\/+$/, '') + '/api/sync/export', 'GET', undefined, 60000);
+  await applySyncBundle(bundle);
+  const exported_at = (bundle && bundle.exported_at) || '';
+  markSyncResult(true, '同期しました（受信・' + exported_at + '）');
+  return exported_at;
+}
+
+let syncRunning = false;
+
+async function syncSchedulerTick(now) {
+  const cfg = loadSyncConfig();
+  const peer = (cfg.peer || '').trim();
+  if (!peer || !isValidPeerUrl(peer)) return false;
+  if (!validSyncTime(cfg.sync_time)) return false;
+  const t = now || new Date();
+  const hm = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+  if (hm < cfg.sync_time) return false;
+  const today = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+  if (typeof cfg.last_sync === 'string' && cfg.last_sync.slice(0, 10) === today) return false;
+  if (syncRunning) return false;
+  syncRunning = true;
+  try {
+    if (cfg.role === SYNC_ROLE_SOURCE) await syncPushToPeer(peer);
+    else if (cfg.role === SYNC_ROLE_DEST) await syncPullFromPeer(peer);
+    else return false;
+    return true;
+  } catch (e) {
+    markSyncResult(false, '自動同期に失敗しました: ' + (e && e.message ? e.message : e));
+    return false;
+  } finally { syncRunning = false; }
+}
+
+setInterval(() => { syncSchedulerTick().catch(() => {}); }, 30000);
 
 const server = http.createServer(async (req, res) => {
   let url;
@@ -321,6 +589,96 @@ const server = http.createServer(async (req, res) => {
     if (pn === '/api/update/status' && req.method === 'DELETE') {
       try { fs.unlinkSync(UPDATE_FLAG); } catch {}
       return json(res, 200, { ok: true });
+    }
+
+    if (pn === '/api/sync/config' && req.method === 'GET') {
+      const cfg = loadSyncConfig();
+      return json(res, 200, { ...cfg, self_url: await getSelfBaseUrl(), self_name: await getSelfHostName() });
+    }
+
+    if (pn === '/api/sync/config' && req.method === 'POST') {
+      let b;
+      try { b = parseJson(await readBody(req)); } catch { return json(res, 413, { ok: false, error: 'body too large' }); }
+      if (!b || typeof b !== 'object') return json(res, 400, { ok: false, error: 'bad request' });
+      const role = b.role;
+      const peer = typeof b.peer === 'string' ? b.peer.trim() : '';
+      const peer_name = typeof b.peer_name === 'string' ? b.peer_name.trim().slice(0, 100) : '';
+      const sync_time = typeof b.sync_time === 'string' ? b.sync_time.trim() : '';
+      if (role !== SYNC_ROLE_SOURCE && role !== SYNC_ROLE_DEST) return json(res, 400, { ok: false, error: '同期元・同期先のいずれかを指定してください' });
+      if (peer && !isValidPeerUrl(peer)) return json(res, 400, { ok: false, error: '同期先のURLが不正です' });
+      if (!validSyncTime(sync_time)) return json(res, 400, { ok: false, error: '同期時刻は HH:MM 形式で指定してください' });
+      const cfg = loadSyncConfig();
+      cfg.role = role; cfg.peer = peer; cfg.peer_name = peer_name; cfg.sync_time = sync_time;
+      saveSyncConfig(cfg);
+      // 相手側の役割を反対にそろえる（相手が旧バージョン等で失敗しても保存自体は成功扱い）
+      let peer_notified = false, peer_message = '';
+      if (peer && b.notify_peer !== false) {
+        const opposite = role === SYNC_ROLE_SOURCE ? SYNC_ROLE_DEST : SYNC_ROLE_SOURCE;
+        try {
+          await httpsRequestJson(peer.replace(/\/+$/, '') + '/api/sync/role', 'POST',
+            { role: opposite, peer_url: await getSelfBaseUrl(), peer_name: await getSelfHostName() }, 10000);
+          peer_notified = true;
+          peer_message = '相手側を「' + (opposite === SYNC_ROLE_DEST ? '同期先' : '同期元') + '」に切り替えました';
+        } catch (e) {
+          peer_message = '相手側への通知に失敗しました（相手のselfnoteを最新版に更新してください）: ' + (e && e.message ? e.message : e);
+        }
+      }
+      return json(res, 200, { ok: true, peer_notified, peer_message });
+    }
+
+    if (pn === '/api/sync/role' && req.method === 'POST') {
+      let b;
+      try { b = parseJson(await readBody(req)); } catch { return json(res, 413, { ok: false, error: 'body too large' }); }
+      if (!b || typeof b !== 'object') return json(res, 400, { ok: false, error: 'bad request' });
+      const role = b.role;
+      const peer_url = typeof b.peer_url === 'string' ? b.peer_url.trim() : '';
+      const peer_name = typeof b.peer_name === 'string' ? b.peer_name.trim().slice(0, 100) : '';
+      if (role !== SYNC_ROLE_SOURCE && role !== SYNC_ROLE_DEST) return json(res, 400, { ok: false, error: 'invalid role' });
+      if (peer_url && !isValidPeerUrl(peer_url)) return json(res, 400, { ok: false, error: 'invalid peer_url' });
+      const cfg = loadSyncConfig();
+      cfg.role = role;
+      if (peer_url) { cfg.peer = peer_url; cfg.peer_name = peer_name; }
+      saveSyncConfig(cfg);
+      return json(res, 200, { ok: true, role });
+    }
+
+    if (pn === '/api/sync/peers' && req.method === 'GET') {
+      return json(res, 200, { peers: await getSyncPeerList(), self_url: await getSelfBaseUrl(), self_name: await getSelfHostName() });
+    }
+
+    if (pn === '/api/sync/export' && req.method === 'GET') {
+      return json(res, 200, await buildSyncBundle());
+    }
+
+    if (pn === '/api/sync/import' && req.method === 'POST') {
+      let b;
+      try { b = parseJson(await readBody(req, SYNC_MAX_BODY)); } catch { return json(res, 413, { ok: false, error: 'body too large' }); }
+      try { await applySyncBundle(b); }
+      catch (e) { return json(res, 400, { ok: false, error: (e && e.message) || 'invalid bundle' }); }
+      const exported_at = (b && b.exported_at) || '';
+      markSyncResult(true, '同期しました（受信・' + exported_at + '）');
+      return json(res, 200, { ok: true });
+    }
+
+    if (pn === '/api/sync/run' && req.method === 'POST') {
+      const cfg = loadSyncConfig();
+      const peer = (cfg.peer || '').trim();
+      if (!peer) return json(res, 400, { ok: false, error: '同期相手が未設定です。先に相手を選択して保存してください' });
+      if (syncRunning) return json(res, 409, { ok: false, error: '同期を実行中です。しばらく待ってください' });
+      syncRunning = true;
+      try {
+        if (cfg.role === SYNC_ROLE_SOURCE) {
+          const exported_at = await syncPushToPeer(peer);
+          return json(res, 200, { ok: true, direction: 'push', message: '同期先へ送信しました（' + exported_at + '）' });
+        } else if (cfg.role === SYNC_ROLE_DEST) {
+          const exported_at = await syncPullFromPeer(peer);
+          return json(res, 200, { ok: true, direction: 'pull', message: '同期元から取得しました（' + exported_at + '）' });
+        }
+        return json(res, 400, { ok: false, error: '役割が不正です' });
+      } catch (e) {
+        markSyncResult(false, '手動同期に失敗しました: ' + (e && e.message ? e.message : e));
+        return json(res, 500, { ok: false, error: (e && e.message ? e.message : e) });
+      } finally { syncRunning = false; }
     }
 
     if (pn === '/api/recent' && req.method === 'GET') {

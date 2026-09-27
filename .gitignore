@@ -1,1 +1,4 @@
 mailmap.txt
+# ===== selfnote の同期設定（Tailnet ホスト名を含むため公開しない） =====
+sync_config.json
+sync_config.json.tmp
