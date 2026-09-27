@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# ファイルから直接実行された場合、スクリプト自身をダウンロードで上書きしながら
+# 実行すると壊れるため、一時コピーから再実行する (curl | bash の場合は対象外)
+if [ -z "${_SELFNOTE_REEXEC:-}" ] && [ -f "$0" ]; then
+  export _SELFNOTE_REEXEC=1
+  export _SELFNOTE_TMP
+  _SELFNOTE_TMP=$(mktemp /tmp/selfnote-install.XXXXXX.sh)
+  cp "$0" "$_SELFNOTE_TMP"
+  exec bash "$_SELFNOTE_TMP" "$@"
+fi
+if [ -n "${_SELFNOTE_TMP:-}" ]; then
+  trap 'rm -f "$_SELFNOTE_TMP"' EXIT
+fi
+
 INSTALL_DIR="/opt/selfnote"
 DATA_DIR="/opt/lxd-data/note"
 PORT=3342
@@ -20,9 +33,32 @@ echo "Node.js: $(node -v)"
 mkdir -p "$INSTALL_DIR/public"
 mkdir -p "$DATA_DIR"
 
+# データディレクトリの権限修復。
+# LXD 共有マウント等では GID がコンテナの userns にマップされていない
+# (例: nogroup) と root でも書き込めないため、所有者の主グループに付け直す。
+fix_data_dir() {
+  local owner grp
+  owner=$(stat -c %U "$DATA_DIR" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "$owner" != "UNKNOWN" ] && id "$owner" &>/dev/null; then
+    grp=$(id -gn "$owner" 2>/dev/null || true)
+    if [ -n "$grp" ]; then
+      # 所有者自身の権限で付け直す (root からの chown は不可の場合があるため)
+      sudo -u "$owner" chown "$owner:$grp" "$DATA_DIR" 2>/dev/null || \
+        chown "$owner:$grp" "$DATA_DIR" 2>/dev/null || true
+    fi
+  fi
+  chmod 755 "$DATA_DIR" 2>/dev/null || true
+}
+
 if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
-  echo "❌ $DATA_DIR への書き込みに失敗しました (権限/UID squashing等の可能性)。インストールを中止します。"
-  exit 1
+  echo "⚠️  $DATA_DIR への書き込みに失敗しました。権限の修復を試みます..."
+  fix_data_dir
+  if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
+    echo "❌ $DATA_DIR への書き込みに失敗しました (権限/UID squashing等の可能性)。インストールを中止します。"
+    echo "   ヒント: $DATA_DIR の所有者・グループがこの環境に存在するユーザーか確認してください。"
+    exit 1
+  fi
+  echo "  ✓ $DATA_DIR の権限を修復しました"
 fi
 rm -f "$DATA_DIR/.write-test"
 
@@ -48,7 +84,7 @@ node --check "$INSTALL_DIR/server.js"
 
 cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote v1.4.1 Markdown Editor
+Description=SelfNote v1.4.2 Markdown Editor
 After=network.target
 
 [Service]
@@ -97,7 +133,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v1.4.1 インストール完了!"
+echo "✅ SelfNote v1.4.2 インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""
