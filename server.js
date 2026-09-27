@@ -660,6 +660,47 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (pn === '/api/sync/unlink' && req.method === 'POST') {
+      // 相手PCからの停止連動用。相手が同期を停止したら自分の相手指定も外す。
+      let b;
+      try { b = parseJson(await readBody(req)); } catch { return json(res, 413, { ok: false, error: 'body too large' }); }
+      if (!b || typeof b !== 'object') return json(res, 400, { ok: false, error: 'bad request' });
+      const peer_url = typeof b.peer_url === 'string' ? b.peer_url.trim().replace(/\/+$/, '') : '';
+      const cfg = loadSyncConfig();
+      let unlinked = false;
+      if (peer_url && (cfg.peer || '').replace(/\/+$/, '') === peer_url) {
+        cfg.peer = ''; cfg.peer_name = '';
+        cfg.last_result = '相手側で同期が停止されたため、相手指定を解除しました';
+        saveSyncConfig(cfg);
+        unlinked = true;
+      }
+      return json(res, 200, { ok: true, unlinked });
+    }
+
+    if (pn === '/api/sync/stop' && req.method === 'POST') {
+      let b;
+      try { b = parseJson(await readBody(req)); } catch { return json(res, 413, { ok: false, error: 'body too large' }); }
+      if (b !== null && (typeof b !== 'object' || Array.isArray(b))) return json(res, 400, { ok: false, error: 'bad request' });
+      const cfg = loadSyncConfig();
+      const oldPeer = (cfg.peer || '').trim();
+      cfg.peer = ''; cfg.peer_name = '';
+      cfg.last_result = '同期を停止しました（' + new Date().toISOString() + '）';
+      saveSyncConfig(cfg);
+      // 相手側にも通知し、相手の相手指定を外す（ベストエフォート）
+      let peer_notified = false, peer_message = '';
+      if (oldPeer && (!b || b.notify_peer !== false)) {
+        try {
+          const r = await httpsRequestJson(oldPeer.replace(/\/+$/, '') + '/api/sync/unlink', 'POST',
+            { peer_url: await getSelfBaseUrl() }, 10000);
+          peer_notified = !!(r && r.unlinked);
+          peer_message = peer_notified ? '相手側の同期設定も解除しました' : '相手側への通知は届きましたが、相手の相手指定は既に外れていました';
+        } catch (e) {
+          peer_message = '相手側への通知に失敗しました（相手のselfnoteを最新版に更新するか、相手側でも停止してください）: ' + (e && e.message ? e.message : e);
+        }
+      }
+      return json(res, 200, { ok: true, peer_notified, peer_message });
+    }
+
     if (pn === '/api/sync/run' && req.method === 'POST') {
       const cfg = loadSyncConfig();
       const peer = (cfg.peer || '').trim();
