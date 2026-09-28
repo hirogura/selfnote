@@ -170,7 +170,7 @@ pre:hover .cp-btn{opacity:1}
 <body>
 <div id="app">
   <div id="sb">
-    <div class="sb-hd"><div class="sb-left"><span>SelfNote</span><span class="sb-ver">v.1.4.4</span></div><div class="sb-right"><button class="sb-rst" id="updBtn" onclick="runUpdate()" title="最新版にアップデート">アップデート</button><button class="sb-rst" onclick="restartServer()" title="サーバー再起動">再起動</button></div></div>
+    <div class="sb-hd"><div class="sb-left"><span>SelfNote</span><span class="sb-ver">v.1.4.5</span></div><div class="sb-right"><button class="sb-rst" id="updBtn" onclick="runUpdate()" title="最新版にアップデート">アップデート</button><button class="sb-rst" onclick="restartServer()" title="サーバー再起動">再起動</button></div></div>
     <div id="upd-msg"></div>
     <div class="sb-act"><button onclick="newItem(false)"><svg viewBox="0 0 24 24" width="14" height="14" style="stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg> 新規</button><button onclick="newItem(true)"><svg viewBox="0 0 24 24" width="14" height="14" style="stroke:#e8b430;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg> 新規</button></div>
     <div class="sb-sort">
@@ -284,7 +284,7 @@ function restartServer(){fetch('/api/restart',{method:'POST'}).then(()=>{toast('
 async function runUpdate(){
   const btn=document.getElementById('updBtn'),msg=document.getElementById('upd-msg');
   if(btn.disabled)return;
-  if(!confirm('最新版をダウンロードしてアップデートしますか？'))return;
+  if(!confirm('最新版をダウンロードしてアップデートしますか？（完了後、自動で再起動します）'))return;
   btn.disabled=true;btn.classList.add('updating');btn.textContent='更新中...';
   msg.className='run';msg.textContent='アップデートを実行中です...完了まで数分かかる場合があります';
   try{
@@ -299,7 +299,18 @@ async function runUpdate(){
     if(st&&st.updating===false){done=true;break}
   }
   btn.disabled=false;btn.classList.remove('updating');btn.textContent='アップデート';
-  if(done){msg.className='show';msg.textContent='アップデートが完了しました。「再起動」ボタンを押してください'}
+  if(done){
+    msg.className='run';msg.textContent='アップデートが完了しました。自動で再起動しています...';
+    try{await fetch('/api/restart',{method:'POST'})}catch(e){}
+    // 再起動の反映を待ってからリロード（再起動中は接続拒否になるため、応答が戻るまで待つ）
+    await new Promise(r=>setTimeout(r,5000));
+    const t1=Date.now();
+    while(Date.now()-t1<60000){
+      try{const r=await fetch('/api/update/status',{cache:'no-store'});if(r.ok)break}catch(e){}
+      await new Promise(r=>setTimeout(r,1000));
+    }
+    location.reload();
+  }
   else{msg.className='err';msg.textContent='アップデートに失敗した可能性があります。ページを再読込して確認してください';api('DELETE','/api/update/status').catch(()=>{})}
 }
 const sbResize=document.getElementById('sb-resize');const sb=document.getElementById('sb');
