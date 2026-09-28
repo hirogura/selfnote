@@ -84,7 +84,7 @@ node --check "$INSTALL_DIR/server.js"
 
 cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote v1.4.5 Markdown Editor
+Description=SelfNote v1.5.0 Markdown Editor
 After=network.target
 
 [Service]
@@ -133,7 +133,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v1.4.5 インストール完了!"
+echo "✅ SelfNote v1.5.0 インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""
