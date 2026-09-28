@@ -608,7 +608,14 @@ const server = http.createServer(async (req, res) => {
       if (peer && !isValidPeerUrl(peer)) return json(res, 400, { ok: false, error: '同期先のURLが不正です' });
       if (!validSyncTime(sync_time)) return json(res, 400, { ok: false, error: '同期時刻は HH:MM 形式で指定してください' });
       const cfg = loadSyncConfig();
+      const old_sync_time = cfg.sync_time || '';
       cfg.role = role; cfg.peer = peer; cfg.peer_name = peer_name; cfg.sync_time = sync_time;
+      if (sync_time !== old_sync_time) {
+        // 同期時刻が変わったら当日の同期済みフラグをリセットし、
+        // その日のうちに即時テストできるようにする。
+        cfg.last_sync = '';
+        cfg.last_result = '同期時刻を変更したため、当日の同期済みフラグをリセットしました';
+      }
       saveSyncConfig(cfg);
       // 相手側の役割を反対にそろえる（相手が旧バージョン等で失敗しても保存自体は成功扱い）
       let peer_notified = false, peer_message = '';
@@ -636,12 +643,19 @@ const server = http.createServer(async (req, res) => {
       if (role !== SYNC_ROLE_SOURCE && role !== SYNC_ROLE_DEST) return json(res, 400, { ok: false, error: 'invalid role' });
       if (peer_url && !isValidPeerUrl(peer_url)) return json(res, 400, { ok: false, error: 'invalid peer_url' });
       const cfg = loadSyncConfig();
+      const old_sync_time = cfg.sync_time || '';
       cfg.role = role;
       if (peer_url) { cfg.peer = peer_url; cfg.peer_name = peer_name; }
       // 同期時刻も共有する（旧バージョンからは送られてこないため任意扱い）。
       // 形式が正しい場合のみ反映し、不正な値では役割の更新を妨げない。
       const sync_time = typeof b.sync_time === 'string' ? b.sync_time.trim() : '';
       if (validSyncTime(sync_time)) cfg.sync_time = sync_time;
+      if (validSyncTime(sync_time) && sync_time !== old_sync_time) {
+        // 相手側で時刻が変わった場合も当日の同期済みフラグをリセットし、
+        // その日のうちに即時テストできるようにする。
+        cfg.last_sync = '';
+        cfg.last_result = '同期時刻を変更したため、当日の同期済みフラグをリセットしました';
+      }
       saveSyncConfig(cfg);
       return json(res, 200, { ok: true, role, sync_time: cfg.sync_time });
     }
