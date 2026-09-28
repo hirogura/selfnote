@@ -616,9 +616,9 @@ const server = http.createServer(async (req, res) => {
         const opposite = role === SYNC_ROLE_SOURCE ? SYNC_ROLE_DEST : SYNC_ROLE_SOURCE;
         try {
           await httpsRequestJson(peer.replace(/\/+$/, '') + '/api/sync/role', 'POST',
-            { role: opposite, peer_url: await getSelfBaseUrl(), peer_name: await getSelfHostName() }, 10000);
+            { role: opposite, peer_url: await getSelfBaseUrl(), peer_name: await getSelfHostName(), sync_time }, 10000);
           peer_notified = true;
-          peer_message = '相手側を「' + (opposite === SYNC_ROLE_DEST ? '同期先' : '同期元') + '」に切り替えました';
+          peer_message = '相手側を「' + (opposite === SYNC_ROLE_DEST ? '同期先' : '同期元') + '」に切り替え、同期時刻（' + sync_time + '）を共有しました';
         } catch (e) {
           peer_message = '相手側への通知に失敗しました（相手のselfnoteを最新版に更新してください）: ' + (e && e.message ? e.message : e);
         }
@@ -638,8 +638,12 @@ const server = http.createServer(async (req, res) => {
       const cfg = loadSyncConfig();
       cfg.role = role;
       if (peer_url) { cfg.peer = peer_url; cfg.peer_name = peer_name; }
+      // 同期時刻も共有する（旧バージョンからは送られてこないため任意扱い）。
+      // 形式が正しい場合のみ反映し、不正な値では役割の更新を妨げない。
+      const sync_time = typeof b.sync_time === 'string' ? b.sync_time.trim() : '';
+      if (validSyncTime(sync_time)) cfg.sync_time = sync_time;
       saveSyncConfig(cfg);
-      return json(res, 200, { ok: true, role });
+      return json(res, 200, { ok: true, role, sync_time: cfg.sync_time });
     }
 
     if (pn === '/api/sync/peers' && req.method === 'GET') {
