@@ -33,6 +33,9 @@ echo "Node.js: $(node -v)"
 mkdir -p "$INSTALL_DIR/public"
 mkdir -p "$DATA_DIR"
 
+DATA_BACKUP=""
+DATA_REBUILT=""
+
 # データディレクトリの権限修復。
 # LXD 共有マウント等では GID がコンテナの userns にマップされていない
 # (例: nogroup) と root でも書き込めないため、所有者の主グループに付け直す。
@@ -47,18 +50,64 @@ fix_data_dir() {
         chown "$owner:$grp" "$DATA_DIR" 2>/dev/null || true
     fi
   fi
+  chown root:root "$DATA_DIR" 2>/dev/null || true
   chmod 755 "$DATA_DIR" 2>/dev/null || true
+}
+
+# 所有者 UID がコンテナの userns にマップされていない場合 (nobody/UNKNOWN と表示される)、
+# コンテナ内 root でも chown/chmod は EPERM となり、書けも消せもしない。
+# 一方で親ディレクトリ (例: /opt/lxd-data) は root で書き換えられることが多いので、
+# 既存ディレクトリを退避して新しいディレクトリを作り直し、中身をコピーする。
+rebuild_data_dir() {
+  local backup
+  backup="${DATA_DIR}.orphan-$(date +%Y%m%d%H%M%S)"
+  if ! mv "$DATA_DIR" "$backup" 2>/dev/null; then
+    return 1
+  fi
+  if ! mkdir -p "$DATA_DIR" 2>/dev/null; then
+    mv "$backup" "$DATA_DIR" 2>/dev/null || true
+    return 1
+  fi
+  chown root:root "$DATA_DIR" 2>/dev/null || true
+  chmod 755 "$DATA_DIR" 2>/dev/null || true
+  # 退避先の中身をコピー (所有権は引き継がず、新しい root 所有に揃える)
+  cp -r --preserve=mode,timestamps "$backup/." "$DATA_DIR/" 2>/dev/null || true
+  chown -R root:root "$DATA_DIR" 2>/dev/null || true
+  # コピーで元ディレクトリのモードが付く場合があるので、書き込み可能に戻す
+  chmod 755 "$DATA_DIR" 2>/dev/null || true
+  DATA_REBUILT=1
+  # 片付けられる場合は片付ける (userns 未マップだと中身を消せず残る)
+  rm -rf "$backup" 2>/dev/null || true
+  if [ -e "$backup" ]; then
+    DATA_BACKUP="$backup"
+  fi
+  return 0
 }
 
 if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
   echo "⚠️  $DATA_DIR への書き込みに失敗しました。権限の修復を試みます..."
   fix_data_dir
   if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
+    echo "  → 所有者がコンテナの userns にマップされていないため、ディレクトリを作り直します..."
+    if ! rebuild_data_dir; then
+      echo "❌ $DATA_DIR への書き込みに失敗しました (権限/UID squashing等の可能性)。インストールを中止します。"
+      echo "   ヒント: LXD ホスト側で 'sudo chown 1000000:1000000 $DATA_DIR' 等を実行して所有者を修復してください。"
+      exit 1
+    fi
+  fi
+  if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
     echo "❌ $DATA_DIR への書き込みに失敗しました (権限/UID squashing等の可能性)。インストールを中止します。"
     echo "   ヒント: $DATA_DIR の所有者・グループがこの環境に存在するユーザーか確認してください。"
     exit 1
   fi
-  echo "  ✓ $DATA_DIR の権限を修復しました"
+  if [ -n "$DATA_REBUILT" ]; then
+    echo "  ✓ $DATA_DIR を作り直して権限を修復しました"
+    if [ -n "$DATA_BACKUP" ]; then
+      echo "    旧ディレクトリ: $DATA_BACKUP (中身はコピー済み。不要なら LXD ホスト側で削除してください)"
+    fi
+  else
+    echo "  ✓ $DATA_DIR の権限を修復しました"
+  fi
 fi
 rm -f "$DATA_DIR/.write-test"
 
@@ -84,7 +133,7 @@ node --check "$INSTALL_DIR/server.js"
 
 cat > /etc/systemd/system/selfnote.service <<EOF
 [Unit]
-Description=SelfNote v1.5.1 Markdown Editor
+Description=SelfNote v1.5.2 Markdown Editor
 After=network.target
 
 [Service]
@@ -133,7 +182,7 @@ if [ -z "$TAILSCALE_DOMAIN" ]; then
 fi
 
 echo ""
-echo "✅ SelfNote v1.5.1 インストール完了!"
+echo "✅ SelfNote v1.5.2 インストール完了!"
 echo ""
 echo "URL: https://${TAILSCALE_DOMAIN}:${TAILSCALE_PORT}"
 echo ""
